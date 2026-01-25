@@ -2,20 +2,21 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>3D Face Studio Pro</title>
+    <title>3D Face Studio - GitHub Edition</title>
     <style>
-        body { margin: 0; background: #000; color: #0f0; font-family: 'Courier New', monospace; overflow: hidden; }
-        #ui { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(0,20,0,0.8); padding: 15px; border: 1px solid #0f0; border-radius: 5px; }
-        #video-feed { position: absolute; right: 10px; bottom: 10px; width: 150px; border: 1px solid #0f0; transform: scaleX(-1); }
-        .status-dot { height: 10px; width: 10px; background-color: #f00; border-radius: 50%; display: inline-block; margin-right: 5px; }
-        #status-text { font-size: 12px; }
+        body { margin: 0; background: #000; color: #00ffcc; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
+        #overlay { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(0,20,0,0.85); padding: 15px; border-radius: 8px; border: 1px solid #00ffcc; width: 220px; box-shadow: 0 0 15px rgba(0,255,204,0.3); }
+        #video-feed { position: absolute; right: 10px; bottom: 10px; width: 160px; border-radius: 8px; transform: scaleX(-1); border: 1px solid #00ffcc; opacity: 0.8; }
+        #status { font-size: 11px; color: #f0ad4e; margin-top: 8px; text-transform: uppercase; letter-spacing: 1px; }
+        h2 { margin: 0; font-size: 16px; border-bottom: 1px solid #333; padding-bottom: 8px; margin-bottom: 8px; }
     </style>
 </head>
 <body>
 
-    <div id="ui">
-        <div style="font-size: 14px; font-weight: bold; margin-bottom: 5px;">AI_FACE_SYSTEM_v2.6</div>
-        <div><span id="status-dot" class="status-dot"></span><span id="status-text">INITIALIZING...</span></div>
+    <div id="overlay">
+        <h2>FACE ENGINE</h2>
+        <div id="status">INIT HARDWARE...</div>
+        <div style="font-size: 10px; color: #888; margin-top: 10px;">Status: <span id="log">Awaiting Camera</span></div>
     </div>
 
     <video id="video-feed" autoplay playsinline></video>
@@ -24,7 +25,8 @@
     {
       "imports": {
         "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-        "three/examples/jsm/loaders/GLTFLoader.js": "https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js"
+        "three/examples/jsm/loaders/GLTFLoader.js": "https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js",
+        "three/examples/jsm/loaders/KTX2Loader.js": "https://unpkg.com/three@0.160.0/examples/jsm/loaders/KTX2Loader.js"
       }
     }
     </script>
@@ -32,30 +34,62 @@
     <script type="module">
         import * as THREE from 'three';
         import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+        import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
         import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
 
+        // --- SCENE SETUP ---
         const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         document.body.appendChild(renderer.domElement);
 
-        scene.add(new THREE.AmbientLight(0xffffff, 1.0));
-        const dirLight = new THREE.DirectionalLight(0xffffff, 2);
-        dirLight.position.set(2, 2, 5);
-        scene.add(dirLight);
+        scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+        const light = new THREE.DirectionalLight(0xffffff, 2);
+        light.position.set(2, 2, 5);
+        scene.add(light);
+        camera.position.z = 1;
 
         let faceMesh = null;
         let currentModel = null;
-        const loader = new GLTFLoader();
 
-        // Stable Three.js model link
+        // --- KTX2 & GLTF LOADERS ---
+        const ktx2Loader = new KTX2Loader()
+            .setTranscoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/basis/')
+            .detectSupport(renderer);
+
+        const loader = new GLTFLoader();
+        loader.setKTX2Loader(ktx2Loader);
+
         const MODEL_URL = 'https://raw.githack.com/mrdoob/three.js/dev/examples/models/gltf/facecap.glb';
 
-        async function init() {
+        function loadFaceModel(url) {
+            document.getElementById('status').innerText = "LOADING 3D ASSET...";
+            loader.load(url, (gltf) => {
+                if(currentModel) scene.remove(currentModel);
+                currentModel = gltf.scene;
+                scene.add(currentModel);
+                
+                currentModel.traverse(child => {
+                    if (child.isMesh && child.morphTargetInfluences) {
+                        faceMesh = child;
+                    }
+                });
+                
+                // Position camera specifically for the FaceCap model
+                camera.position.set(0, 0.2, 0.6);
+                document.getElementById('status').innerText = "SYSTEM READY";
+                document.getElementById('status').style.color = "#00ffcc";
+            });
+        }
+
+        // --- AI LOGIC ---
+        let faceLandmarker;
+        async function run() {
             try {
                 const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
-                const faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+                faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
                     baseOptions: { 
                         modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
                         delegate: "GPU" 
@@ -66,42 +100,45 @@
 
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true });
                 document.getElementById('video-feed').srcObject = stream;
+                document.getElementById('log').innerText = "Camera Connected";
 
-                loader.load(MODEL_URL, (gltf) => {
-                    currentModel = gltf.scene;
-                    scene.add(currentModel);
-                    currentModel.traverse(c => { if(c.morphTargetInfluences) faceMesh = c; });
-                    camera.position.set(0, 0.2, 0.8);
-                    
-                    document.getElementById('status-dot').style.backgroundColor = "#0f0";
-                    document.getElementById('status-text').innerText = "TRACKING ACTIVE";
-                });
-
-                function loop() {
-                    const video = document.getElementById('video-feed');
-                    if (video.readyState >= 2 && faceMesh) {
-                        const results = faceLandmarker.detectForVideo(video, performance.now());
-                        if (results.faceBlendshapes?.length > 0) {
-                            const shapes = results.faceBlendshapes[0].categories;
-                            shapes.forEach(s => {
-                                const idx = faceMesh.morphTargetDictionary[s.categoryName];
-                                if (idx !== undefined) {
-                                    faceMesh.morphTargetInfluences[idx] = THREE.MathUtils.lerp(faceMesh.morphTargetInfluences[idx], s.score, 0.5);
-                                }
-                            });
-                            const landmarks = results.faceLandmarks[0];
-                            currentModel.rotation.y = THREE.MathUtils.lerp(currentModel.rotation.y, (landmarks[1].x - 0.5) * -1.2, 0.1);
-                            currentModel.rotation.x = THREE.MathUtils.lerp(currentModel.rotation.x, (landmarks[1].y - 0.5) * 1.0, 0.1);
-                        }
-                    }
-                    renderer.render(scene, camera);
-                    requestAnimationFrame(loop);
-                }
-                loop();
-
+                loadFaceModel(MODEL_URL);
+                animate();
             } catch (err) {
-                document.getElementById('status-text').innerText = "ERROR: " + err.message;
+                document.getElementById('status').innerText = "ERROR BOOTING AI";
+                console.error(err);
             }
+        }
+
+        function animate() {
+            const video = document.getElementById('video-feed');
+            if (video.readyState >= 2 && faceMesh) {
+                const results = faceLandmarker.detectForVideo(video, performance.now());
+                
+                if (results.faceBlendshapes?.length > 0) {
+                    const shapes = results.faceBlendshapes[0].categories;
+                    
+                    // Apply Morph Targets
+                    shapes.forEach(s => {
+                        const idx = faceMesh.morphTargetDictionary[s.categoryName];
+                        if (idx !== undefined) {
+                            // Smooth interpolation (lerp)
+                            faceMesh.morphTargetInfluences[idx] = THREE.MathUtils.lerp(
+                                faceMesh.morphTargetInfluences[idx], 
+                                s.score, 
+                                0.5
+                            );
+                        }
+                    });
+
+                    // Head Rotation
+                    const landmarks = results.faceLandmarks[0];
+                    currentModel.rotation.y = THREE.MathUtils.lerp(currentModel.rotation.y, (landmarks[1].x - 0.5) * -1.2, 0.1);
+                    currentModel.rotation.x = THREE.MathUtils.lerp(currentModel.rotation.x, (landmarks[1].y - 0.5) * 0.8, 0.1);
+                }
+            }
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
         }
 
         window.addEventListener('resize', () => {
@@ -110,7 +147,7 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
 
-        init();
+        run();
     </script>
 </body>
 </html>
