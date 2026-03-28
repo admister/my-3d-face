@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Face Mimic Pro</title>
+    <style>
+        body { margin: 0; background: #1a1a1a; color: #00ffcc; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+        #video-container { position: absolute; bottom: 20px; right: 20px; width: 180px; border: 1px solid #444; border-radius: 8px; overflow: hidden; opacity: 0.8; }
+        #video-feed { width: 100%; transform: scaleX(-1); display: block; }
+        #ui { position: absolute; top: 20px; left: 20px; background: rgba(30, 30, 30, 0.8); padding: 15px; border-radius: 4px; border-left: 3px solid #00ffcc; pointer-events: none; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <div style="font-size: 10px; opacity: 0.5;">WORKSPACE // FACE_MIMIC_V1</div>
+        <div id="status">LOADING AI MODELS...</div>
+    </div>
+
+    <div id="video-container">
+        <video id="video-feed" autoplay playsinline></video>
+    </div>
+
+    <script type="module">
+        import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+        import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+
+        // --- 1. SETUP THREE.JS (BLENDER LOOK) ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1a1a);
+        scene.fog = new THREE.Fog(0x1a1a1a, 5, 15);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 0.5, 5);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Grid & Background
+        const grid = new THREE.GridHelper(20, 20, 0x333333, 0x222222);
+        grid.position.y = -2.5;
+        scene.add(grid);
+
+        // --- 2. CREATE STYLIZED FACE ---
+        const headGroup = new THREE.Group();
+        scene.add(headGroup);
+
+        // Low-poly head
+        const head = new THREE.Mesh(
+            new THREE.IcosahedronGeometry(2, 1), 
+            new THREE.MeshStandardMaterial({ color: 0x222222, flatShading: true, roughness: 0.3, metalness: 0.5 })
+        );
+        headGroup.add(head);
+
+        // Glowing Eyes
+        const eyeGeo = new THREE.TorusGeometry(0.2, 0.04, 8, 24);
+        const eyeMat = new THREE.MeshBasicMaterial({ color: 0x00ffcc });
+        const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+        const eyeR = eyeL.clone();
+        eyeL.position.set(-0.7, 0.5, 1.8);
+        eyeR.position.set(0.7, 0.5, 1.8);
+        headGroup.add(eyeL, eyeR);
+
+        // Glowing Mouth
+        const mouth = new THREE.Mesh(
+            new THREE.CapsuleGeometry(0.25, 0.05, 4, 8),
+            new THREE.MeshBasicMaterial({ color: 0x00ffcc })
+        );
+        mouth.position.set(0, -0.8, 1.9);
+        mouth.rotation.z = Math.PI / 2;
+        headGroup.add(mouth);
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+        const spot = new THREE.SpotLight(0xffffff, 100);
+        spot.position.set(5, 5, 5);
+        scene.add(spot);
+
+        // --- 3. AI & SMOOTHING LOGIC ---
+        let faceLandmarker;
+        let lastVideoTime = -1;
+        let lerpTarget = { rotX: 0, rotY: 0, mouthY: 1, blinkL: 1, blinkR: 1 };
+
+        async function init() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+            faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+                baseOptions: { 
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+                    delegate: "GPU" 
+                },
+                outputFaceBlendshapes: true,
+                runningMode: "VIDEO"
+            });
+            document.getElementById('status').innerText = "TRACKING ACTIVE";
+            startCamera();
+        }
+
+        async function startCamera() {
+            const video = document.getElementById('video-feed');
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            video.srcObject = stream;
+            video.onloadeddata = () => requestAnimationFrame(renderLoop);
+        }
+
+        function renderLoop() {
+            const video = document.getElementById('video-feed');
+            
+            // Safety Gate: Check dimensions to prevent ROI crash
+            if (video.readyState >= 2 && video.videoWidth > 0) {
+                if (video.currentTime !== lastVideoTime) {
+                    lastVideoTime = video.currentTime;
+                    const results = faceLandmarker.detectForVideo(video, performance.now());
+
+                    if (results.faceBlendshapes?.length > 0) {
+                        const shapes = results.faceBlendshapes[0].categories;
+                        const getS = (n) => shapes.find(s => s.categoryName === n).score;
+
+                        // Set targets for smoothing
+                        lerpTarget.blinkL = 1 - getS('eyeBlinkLeft');
+                        lerpTarget.blinkR = 1 - getS('eyeBlinkRight');
+                        lerpTarget.mouthY = 1 + (getS('jawOpen') * 12);
+                        
+                        const landmarks = results.faceLandmarks[0];
+                        lerpTarget.rotY = (landmarks[1].x - 0.5) * -1.8;
+                        lerpTarget.rotX = (landmarks[1].y - 0.5) * 1.2;
+                    }
+                }
+            }
+
+            // Apply Smooth Lerp (0.1 = slow/smooth, 0.5 = fast/snappy)
+            eyeL.scale.y = THREE.MathUtils.lerp(eyeL.scale.y, lerpTarget.blinkL, 0.15);
+            eyeR.scale.y = THREE.MathUtils.lerp(eyeR.scale.y, lerpTarget.blinkR, 0.15);
+            mouth.scale.x = THREE.MathUtils.lerp(mouth.scale.x, lerpTarget.mouthY, 0.2);
+            headGroup.rotation.y = THREE.MathUtils.lerp(headGroup.rotation.y, lerpTarget.rotY, 0.1);
+            headGroup.rotation.x = THREE.MathUtils.lerp(headGroup.rotation.x, lerpTarget.rotX, 0.1);
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(renderLoop);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        init();
+    </script>
+</body>
+</html>
