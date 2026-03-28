@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cute Fox - Face Tracking</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #2c3e50; }
+        #video-container {
+            position: absolute; bottom: 20px; right: 20px;
+            width: 150px; height: 112px; border: 3px solid #ff8c00;
+            border-radius: 12px; overflow: hidden; z-index: 10;
+        }
+        video { transform: scaleX(-1); width: 100%; height: 100%; object-fit: cover; }
+    </style>
+</head>
+<body>
+
+    <div id="video-container"><video id="input_video"></video></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.150.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+
+    <script>
+        // --- SCENE SETUP ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xade8f4); // Sky blue background
+        
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Softer shadows
+        document.body.appendChild(renderer.domElement);
+
+        // --- MATERIALS ---
+        const foxOrangeMat = new THREE.MeshToonMaterial({ color: 0xff8c00 }); // Vibrant orange
+        const foxWhiteMat = new THREE.MeshToonMaterial({ color: 0xfafafa }); // Off-white
+        const foxBlackMat = new THREE.MeshToonMaterial({ color: 0x222222 }); // Dark grey/black
+        const floorMat = new THREE.MeshToonMaterial({ color: 0x8b4513 }); // Wood brown
+
+        // --- THE CUTE FOX ---
+        const fox = new THREE.Group();
+
+        // Body (slightly fatter sphere)
+        const body = new THREE.Mesh(new THREE.SphereGeometry(1.3, 16, 12), foxOrangeMat);
+        body.position.y = 1.0; // Lowered slightly
+        fox.add(body);
+        
+        // Head Group (for rotation)
+        const headGroup = new THREE.Group();
+        headGroup.position.set(0, 2.3, 0.7); // Adjusted position relative to body
+
+        const headSphere = new THREE.Mesh(new THREE.SphereGeometry(0.8, 16, 12), foxOrangeMat);
+        headGroup.add(headSphere);
+
+        // Snout (more cylindrical for cuteness)
+        const snout = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.5, 0.8, 8), foxWhiteMat);
+        snout.position.z = 0.5; // Extends forward from head sphere
+        snout.position.y = -0.1; // Slightly lower than center of head
+        headGroup.add(snout);
+
+        // Nose (on the tip of the snout)
+        const nose = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 8), foxBlackMat);
+        nose.position.z = 0.9;
+        nose.position.y = -0.1;
+        headGroup.add(nose);
+
+        // Eyes (two small spheres)
+        const eyeMat = new THREE.MeshToonMaterial({ color: 0x000000 }); // Black eyes
+        const eyeLeft = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 8), eyeMat);
+        eyeLeft.position.set(-0.3, 0.2, 0.7);
+        headGroup.add(eyeLeft);
+
+        const eyeRight = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 8), eyeMat);
+        eyeRight.position.set(0.3, 0.2, 0.7);
+        headGroup.add(eyeRight);
+
+        // Ears (smaller, more rounded cones)
+        const earShape = new THREE.ConeGeometry(0.25, 0.7, 8);
+        const earLeft = new THREE.Mesh(earShape, foxOrangeMat);
+        earLeft.position.set(-0.5, 0.7, 0.1);
+        headGroup.add(earLeft);
+
+        const earRight = new THREE.Mesh(earShape, foxOrangeMat);
+        earRight.position.set(0.5, 0.7, 0.1);
+        headGroup.add(earRight);
+
+        fox.add(headGroup);
+
+        // Legs (small, stubby cylinders)
+        const legShape = new THREE.CylinderGeometry(0.3, 0.3, 0.8, 8);
+        const legMat = new THREE.MeshToonMaterial({ color: 0xcc7000 }); // Slightly darker orange for legs
+
+        const leg1 = new THREE.Mesh(legShape, legMat); leg1.position.set(-0.8, 0.3, 0.8); fox.add(leg1);
+        const leg2 = new THREE.Mesh(legShape, legMat); leg2.position.set(0.8, 0.3, 0.8); fox.add(leg2);
+        const leg3 = new THREE.Mesh(legShape, legMat); leg3.position.set(-0.8, 0.3, -0.8); fox.add(leg3);
+        const leg4 = new THREE.Mesh(legShape, legMat); leg4.position.set(0.8, 0.3, -0.8); fox.add(leg4);
+
+        // Tail (more flexible cylinders and spheres for a wagging effect)
+        const tailGroup = new THREE.Group();
+        tailGroup.position.set(0, 1.2, -1.2); // Position relative to body, at the back
+
+        const tailSegment1 = new THREE.Mesh(new THREE.SphereGeometry(0.7, 16, 12), foxOrangeMat);
+        tailSegment1.position.y = 0.3;
+        tailGroup.add(tailSegment1);
+
+        const tailSegment2 = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 10), foxOrangeMat);
+        tailSegment2.position.y = 1.0;
+        tailGroup.add(tailSegment2);
+
+        const tailTip = new THREE.Mesh(new THREE.SphereGeometry(0.4, 10, 8), foxWhiteMat);
+        tailTip.position.y = 1.6;
+        tailGroup.add(tailTip);
+        
+        fox.add(tailGroup);
+
+        // Ensure all fox parts cast shadows
+        fox.traverse(n => { if(n.isMesh) n.castShadow = true; });
+        scene.add(fox);
+
+        // --- ENVIRONMENT ---
+        const floor = new THREE.Mesh(new THREE.BoxGeometry(20, 0.5, 20), floorMat);
+        floor.receiveShadow = true;
+        floor.position.y = -0.25;
+        scene.add(floor);
+
+        // --- LIGHTING ---
+        const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        sunLight.position.set(5, 10, 5);
+        sunLight.castShadow = true;
+        // Improve shadow quality
+        sunLight.shadow.mapSize.width = 1024;
+        sunLight.shadow.mapSize.height = 1024;
+        sunLight.shadow.camera.near = 0.5;
+        sunLight.shadow.camera.far = 50;
+        sunLight.shadow.camera.left = -10;
+        sunLight.shadow.camera.right = 10;
+        sunLight.shadow.camera.top = 10;
+        sunLight.shadow.camera.bottom = -10;
+        scene.add(sunLight, new THREE.AmbientLight(0xffffff, 0.6));
+
+        camera.position.set(0, 3, 10);
+
+        // --- FACE TRACKING ---
+        let targetX = 0;
+        const videoElement = document.getElementById('input_video');
+
+        function onResults(results) {
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const face = results.multiFaceLandmarks[0][1]; 
+                targetX = (0.5 - face.x) * 18; // Horizontal range
+            }
+        }
+
+        const faceMesh = new FaceMesh({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+        });
+        faceMesh.setOptions({ maxNumFaces: 1, minDetectionConfidence: 0.6 });
+        faceMesh.onResults(onResults);
+
+        new Camera(videoElement, {
+            onFrame: async () => { await faceMesh.send({image: videoElement}); },
+            width: 640, height: 480
+        }).start();
+
+        // --- ANIMATION ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Camera movement (horizontal only)
+            camera.position.x += (targetX - camera.position.x) * 0.08;
+            camera.position.y = 3; // Locked Vertical
+            camera.lookAt(0, 2, 0); 
+
+            // Fox head looks at camera
+            headGroup.lookAt(camera.position.x, camera.position.y, camera.position.z);
+            
+            // Subtle body bobbing
+            fox.position.y = Math.sin(Date.now() * 0.002) * 0.05;
+
+            // Tail wagging animation
+            tailGroup.rotation.y = Math.sin(Date.now() * 0.005) * 0.5; // Wags left-right
+            tailGroup.rotation.x = 0.3 + Math.sin(Date.now() * 0.003) * 0.1; // Slight up-down bounce
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
